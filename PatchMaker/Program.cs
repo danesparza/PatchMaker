@@ -1,18 +1,26 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using PatchMaker.Utilities;
 
 namespace PatchMaker
 {
     class Program
     {
+        /// <summary>
+        /// Directory comparison and patch creation tool.  See 
+        /// http://msdn.microsoft.com/en-us/library/bb546137.aspx for more info
+        /// on some implementation details
+        /// </summary>
+        /// <param name="args"></param>
         static void Main(string[] args)
         {
             //  Parse commandline options
-            Options options = new Options();
+            CommandLineOptions options = new CommandLineOptions();
             if(CommandLine.Parser.Default.ParseArguments(args, options))
             { 
                 //  Look at the source directory.  If it doesn't exist, complain
@@ -29,90 +37,64 @@ namespace PatchMaker
                     return;
                 }
 
-                //  Create the output directory, if it doesn't already exist:
-                if(!Directory.Exists(options.PatchBaseDirectory))
+                //  If we should create a date folder, make that part of the base patch directory
+                string basePatchDirectory = options.PatchBaseDirectory;
+                if(options.CreateDateFolder)
                 {
-                    Directory.CreateDirectory(options.PatchBaseDirectory);
+                    basePatchDirectory = Path.Combine(options.PatchBaseDirectory, DateTime.Now.ToString("yyyy-MM-dd"));
+                }
+                
+                //  Create the output directory, if it doesn't already exist:
+                if(!Directory.Exists(basePatchDirectory))
+                {
+                    Directory.CreateDirectory(basePatchDirectory);
                 }
 
                 //  Read in the source and target directory file information:
                 DirectoryInfo sourceDirectory = new DirectoryInfo(options.SourceDirectory);
                 DirectoryInfo targetDirectory = new DirectoryInfo(options.TargetDirectory);
 
+                Console.Write("Scanning source directory ...");
                 IEnumerable<FileInfo> allSourceFiles = sourceDirectory.GetFiles("*.*", SearchOption.AllDirectories);
+                Console.Write("{0} files found.\n", allSourceFiles.Count());
+
+                Console.Write("Scanning target directory ...");
                 IEnumerable<FileInfo> allTargetFiles = targetDirectory.GetFiles("*.*", SearchOption.AllDirectories);
+                Console.Write("{0} files found.\n", allTargetFiles.Count());
 
-                //A custom file comparer defined below
-                FileCompare myFileCompare = new FileCompare();
-
-                //  See http://msdn.microsoft.com/en-us/library/bb546137.aspx
-                // This query determines whether the two folders contain 
-                // identical file lists, based on the custom file comparer 
-                // that is defined in the FileCompare class. 
-                // The query executes immediately because it returns a bool. 
-                bool areIdentical = allSourceFiles.SequenceEqual(allTargetFiles, myFileCompare);
-
-                if(areIdentical == true)
-                {
-                    Console.WriteLine("the two folders are the same");
-                }
+                //  Determine which file comparison to use:
+                IEqualityComparer<FileInfo> fileComparison;
+                if(options.CompareBytes)
+                    fileComparison = new CompleteFileCompare() { ExcludeSpec = options.ExcludeSpec };
                 else
+                    fileComparison = new SimpleFileCompare() { ExcludeSpec = options.ExcludeSpec };
+
+                //  See if we can determine if the directories are the same...
+                if((allSourceFiles.Count() == allTargetFiles.Count()) && allSourceFiles.SequenceEqual(allTargetFiles, fileComparison))
                 {
-                    Console.WriteLine("The two folders are not the same");
+                    Console.WriteLine("The two folders are the identical");
+                    return;
+                }
+                
+                //  If they're not the same, see what files exist
+                var filesToPatch = (from file in allSourceFiles
+                                      select file).Except(allTargetFiles, fileComparison);
+
+                Console.WriteLine("The following files are different and will be added to the patch:");
+                foreach(var fi in filesToPatch)
+                {
+                    //  If the file is in the exlude list, don't bother comparing it
+                    if(!FileHelper.FileInExcludeList(fi.Name, options.ExcludeSpec))
+                    {
+                        //  Copy our files to our patch base directory and print out each one
+                        Console.WriteLine(FileHelper.CopyToPatchDirectory(basePatchDirectory, options.SourceDirectory, fi));
+                    }
                 }
             }
         }
+
+        
     }
 
-    class FileCompare : IEqualityComparer<FileInfo>
-    {
-
-        #region IEqualityComparer<FileInfo> Members
-
-        public bool Equals(FileInfo f1, FileInfo f2)
-        {
-            //  See http://stackoverflow.com/a/211042/19020
-            // make sure lengths are identical
-            long length = f1.Length;
-            if(length != f2.Length)
-                return false;
-
-            byte[] buf1 = new byte[4096];
-            byte[] buf2 = new byte[4096];
-
-            // open both for reading
-            using(FileStream stream1 = File.OpenRead(f1.FullName))
-            using(FileStream stream2 = File.OpenRead(f2.FullName))
-            {
-                // compare content for equality
-                int b1, b2;
-                while(length > 0)
-                {
-                    // figure out how much to read
-                    int toRead = buf1.Length;
-                    if(toRead > length)
-                        toRead = (int)length;
-                    length -= toRead;
-
-                    // read a chunk from each and compare
-                    b1 = stream1.Read(buf1, 0, toRead);
-                    b2 = stream2.Read(buf2, 0, toRead);
-
-                    for(int i = 0; i < toRead; ++i)
-                        if(buf1[i] != buf2[i])
-                            return false;
-                }
-            }
-
-            return true;
-        }
-
-        public int GetHashCode(FileInfo fi)
-        {
-            string s = String.Format("{0}{1}", fi.Name, fi.Length);
-            return s.GetHashCode();
-        }
-
-        #endregion
-    }
+    
 }
