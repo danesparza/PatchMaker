@@ -53,21 +53,46 @@ namespace PatchMaker
                 //  Read in the source and target directory file information:
                 DirectoryInfo sourceDirectory = new DirectoryInfo(options.SourceDirectory);
                 DirectoryInfo targetDirectory = new DirectoryInfo(options.TargetDirectory);
+                IEnumerable<FileInfo> allSourceFiles = new List<FileInfo>();
+                IEnumerable<FileInfo> allTargetFiles = new List<FileInfo>();
 
-                Console.Write("Scanning source directory ...");
-                IEnumerable<FileInfo> allSourceFiles = sourceDirectory.GetFiles("*.*", SearchOption.AllDirectories);
-                Console.Write("{0} files found.\n", allSourceFiles.Count());
+                var sfTask = Task.Factory.StartNew(() =>
+                {
+                    string output = string.Empty;
+                    output += string.Format("Scanning source directory ...");
+                    allSourceFiles = sourceDirectory.GetFiles("*.*", SearchOption.AllDirectories);
+                    output += string.Format("{0} files found.\n", allSourceFiles.Count());
+                    Console.Write(output);
+                });
 
-                Console.Write("Scanning target directory ...");
-                IEnumerable<FileInfo> allTargetFiles = targetDirectory.GetFiles("*.*", SearchOption.AllDirectories);
-                Console.Write("{0} files found.\n", allTargetFiles.Count());
-
+                var tfTask = Task.Factory.StartNew(() =>
+                {
+                    string output = string.Empty;
+                    output += string.Format("Scanning target directory ...");
+                    allTargetFiles = targetDirectory.GetFiles("*.*", SearchOption.AllDirectories);
+                    output += string.Format("{0} files found.\n", allTargetFiles.Count());
+                    Console.Write(output);
+                });
+                
                 //  Determine which file comparison to use:
                 IEqualityComparer<FileInfo> fileComparison;
                 if(options.CompareBytes)
                     fileComparison = new CompleteFileCompare() { ExcludeSpec = options.ExcludeSpec };
                 else
                     fileComparison = new SimpleFileCompare() { ExcludeSpec = options.ExcludeSpec };
+
+                try
+                {
+                    //  Wait for our directory scan to complete
+                    Task.WaitAll(new Task[] { sfTask, tfTask });
+                }
+                catch(AggregateException e)
+                {
+                    for(int j = 0; j < e.InnerExceptions.Count; j++)
+                    {
+                        Console.WriteLine("\n-------------------------------------------------\n{0}", e.InnerExceptions[j].ToString());
+                    }
+                }
 
                 //  See if we can determine if the directories are the same...
                 if((allSourceFiles.Count() == allTargetFiles.Count()) && allSourceFiles.SequenceEqual(allTargetFiles, fileComparison))
@@ -77,8 +102,11 @@ namespace PatchMaker
                 }
                 
                 //  If they're not the same, see what files exist
+                var filesToPatch = allSourceFiles.Except(allTargetFiles, fileComparison);
+                /*
                 var filesToPatch = (from file in allSourceFiles
-                                      select file).Except(allTargetFiles, fileComparison);
+                                      select file).AsParallel().Except(allTargetFiles, fileComparison);
+                */
 
                 Console.WriteLine("The following files are different and will be added to the patch:");
                 foreach(var fi in filesToPatch)
